@@ -36,11 +36,11 @@ public class DockReceiver extends BroadcastReceiver {
                 return;
             }
             case "sa.urtv.home.GET_DOCK":
-                setResultData("dock: " + String.join(",", Dock.shown(c, apps)));
+                setResultData("dock: " + android.text.TextUtils.join(",", Dock.shown(c, apps)));
                 return;
             case "sa.urtv.home.RESET_DOCK":
                 Dock.reset(c);
-                setResultData("dock: " + String.join(",", Dock.shown(c, apps)) + " (defaults)");
+                setResultData("dock: " + android.text.TextUtils.join(",", Dock.shown(c, apps)) + " (defaults)");
                 return;
             case "sa.urtv.home.SET_DOCK": {
                 String raw = i.getStringExtra("apps");
@@ -53,9 +53,9 @@ public class DockReceiver extends BroadcastReceiver {
                 }
                 if (row.isEmpty()) { setResultData("error: none of these apps are on this TV's home screen"); return; }
                 Dock.save(c, row);
-                setResultData("dock: " + String.join(",", Dock.shown(c, apps))
+                setResultData("dock: " + android.text.TextUtils.join(",", Dock.shown(c, apps))
                     + (skipped.isEmpty() ? "" : "  skipped (not installed, hidden or over " + Dock.MAX + "): "
-                       + String.join(",", skipped)));
+                       + android.text.TextUtils.join(",", skipped)));
                 return;
             }
             case "sa.urtv.home.HIDDEN": {
@@ -72,7 +72,7 @@ public class DockReceiver extends BroadcastReceiver {
                 for (String p : raw.split(",")) if (!p.trim().isEmpty()) pkgs.add(p.trim());
                 boolean hide = action.endsWith("HIDE");
                 Dock.hideOrShow(c, pkgs, hide);
-                setResultData((hide ? "hidden: " : "shown: ") + String.join(",", pkgs));
+                setResultData((hide ? "hidden: " : "shown: ") + android.text.TextUtils.join(",", pkgs));
                 return;
             }
             default:

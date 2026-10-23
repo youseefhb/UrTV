@@ -64,7 +64,6 @@ import java.util.Map;
 public class MainActivity extends Activity {
 
     // Dock, hidden apps, Live TV and grid width come from res/values/config.xml.
-    private String[] dockApps;
     private String liveTvPkg, inputPickerPkg;
     private int cols;
 
@@ -102,6 +101,10 @@ public class MainActivity extends Activity {
     private int packageSeq;
     private PopupWindow inputsPopup;
     private HomeCard homeCard;
+    private MatchPanel matchPanel;
+    private PhotoSlideshow photoSlideshow;
+    private int wallpaperGeneration;
+    private boolean resumed, hasWallpaper;
 
     private final BroadcastReceiver tick = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) { updateClock(); updateWifi(); }
@@ -111,7 +114,9 @@ public class MainActivity extends Activity {
     };
     // favourites changed in «ترتيب المفضلة» or from ADB while the home screen is up
     private final BroadcastReceiver dockChanged = new BroadcastReceiver() {
-        @Override public void onReceive(Context c, Intent i) { dockApps = loadDock(); buildApps(); }
+        @Override public void onReceive(Context c, Intent i) {
+            buildApps();
+        }
     };
 
     // ---------------------------------------------------------------- lifecycle
@@ -119,7 +124,6 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
-        dockApps = loadDock();
         liveTvPkg = getString(R.string.live_tv_package);
         inputPickerPkg = getString(R.string.input_picker_package);
         cols = getResources().getInteger(R.integer.columns);
@@ -141,6 +145,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        resumed = true;
         IntentFilter tf = new IntentFilter(Intent.ACTION_TIME_TICK);
         tf.addAction(Intent.ACTION_TIME_CHANGED);
         tf.addAction(Intent.ACTION_TIMEZONE_CHANGED);
@@ -149,24 +154,31 @@ public class MainActivity extends Activity {
         updateClock();
         updateWifi();
         homeCard.refresh();
+        matchPanel.resume();
+        photoSlideshow.resume();
         View last = lastFocusedId == View.NO_ID ? null : findViewById(lastFocusedId);
         if (last == null && !dockCards.isEmpty()) last = dockCards.get(0);
         if (last != null) last.requestFocus();
         // Catch installs/removals that happened while another app was in front.
-        if (getPackageManager().getChangedPackages(packageSeq) != null) buildApps();
+        // Also picks up app choices changed in customization; API 24 has no package change tracker.
+        buildApps();
         if (firstShow) { firstShow = false; playEntrance(); }
         // New photo on return if the current one has been up for the full interval.
-        if (wallIndex < 0 || SystemClock.elapsedRealtime() - wallChangedAt >= WALLPAPER_INTERVAL_MS) nextWallpaper();
-        else scheduleWallpaper(WALLPAPER_INTERVAL_MS - (SystemClock.elapsedRealtime() - wallChangedAt));
+        if (!hasWallpaper || wallIndex < 0 || SystemClock.elapsedRealtime() - wallChangedAt >= wallpaperInterval()) nextWallpaper();
+        else scheduleWallpaper(wallpaperInterval() - (SystemClock.elapsedRealtime() - wallChangedAt));
     }
 
     @Override
     protected void onPause() {
         super.onPause();
+        resumed = false;
+        wallpaperGeneration++;
         handler.removeCallbacks(rotateWallpaper);
         unregisterReceiver(tick);
         if (inputsPopup != null) inputsPopup.dismiss();
         homeCard.pause();
+        matchPanel.pause();
+        photoSlideshow.pause();
     }
 
     @Override
@@ -174,6 +186,8 @@ public class MainActivity extends Activity {
         unregisterReceiver(packages);
         unregisterReceiver(dockChanged);
         homeCard.destroy();
+        matchPanel.destroy();
+        photoSlideshow.destroy();
         super.onDestroy();
     }
 
@@ -236,11 +250,13 @@ public class MainActivity extends Activity {
         hero = new FrameLayout(this);
         hero.setClipChildren(false);
         int screenH = getResources().getDisplayMetrics().heightPixels;
-        content.addView(hero, new LinearLayout.LayoutParams(-1, screenH));
+        content.addView(hero, new LinearLayout.LayoutParams(-1, Math.max(screenH, dp(540))));
 
         hero.addView(buildHeader(), lp(-1, -2, Gravity.TOP, dp(48), dp(36), dp(48), 0));
-        // optional card under the pills, same size as beside the screensaver's clock
-        homeCard = new HomeCard(this, hero, lp(dp(461), dp(250), Gravity.LEFT | Gravity.TOP, dp(48), dp(84), 0, 0));
+        photoSlideshow = new PhotoSlideshow(this);
+        hero.addView(photoSlideshow.view(), lp(dp(112), dp(112), Gravity.TOP | Gravity.LEFT, dp(48), dp(36), 0, 0));
+        matchPanel = new MatchPanel(this);
+        hero.addView(matchPanel.view(), lp(-1, dp(110), Gravity.TOP, dp(48), dp(158), dp(48), 0));
 
         LinearLayout bottom = new LinearLayout(this);
         bottom.setOrientation(LinearLayout.VERTICAL);
@@ -266,6 +282,11 @@ public class MainActivity extends Activity {
         band.setStroke(dp(1), 0x14FFFFFF);
         dockRow.setBackground(band);
         bottom.addView(dockRow, new LinearLayout.LayoutParams(-1, -2));
+
+        // Keep the optional screensaver panel accessible below the main hero.
+        FrameLayout extraCard = new FrameLayout(this);
+        content.addView(extraCard, new LinearLayout.LayoutParams(-1, -2));
+        homeCard = new HomeCard(this, extraCard, lp(dp(461), dp(250), Gravity.TOP | Gravity.LEFT, dp(48), 0, 0, 0));
 
         appsLabel = text(11, "sans-serif-medium", 0x99FFFFFF);
         appsLabel.setText("كل التطبيقات");
@@ -318,14 +339,19 @@ public class MainActivity extends Activity {
         inputs.setOnClickListener(v -> showInputs(v));
         wifiPill = pill("واي فاي", R.drawable.ic_wifi);
         wifiPill.setOnClickListener(v -> launch(new Intent(Settings.ACTION_WIFI_SETTINGS)));
+        TextView customize = pill("تخصيص", R.drawable.ic_home);
+        customize.setOnClickListener(v -> launch(new Intent(this, HomeSettingsActivity.class)));
         TextView settings = pill("الإعدادات", R.drawable.ic_settings);
         settings.setOnClickListener(v -> launch(new Intent(Settings.ACTION_SETTINGS)));
-        for (TextView p : isInstalled(SAVER_PKG) ? new TextView[]{inputs, wifiPill, settings, saver}
-                                                  : new TextView[]{inputs, wifiPill, settings}) {
-            right.addView(p, llp(-2, dp(30), dp(10), 0, 0, 0));
+        for (TextView p : isInstalled(SAVER_PKG) ? new TextView[]{customize, inputs, wifiPill, settings, saver}
+                                                  : new TextView[]{customize, inputs, wifiPill, settings}) {
+            right.addView(p, llp(-2, dp(30), dp(6), 0, 0, 0));
             pills.add(p);
         }
-        header.addView(right, new FrameLayout.LayoutParams(-2, -2, Gravity.LEFT | Gravity.TOP));
+        FrameLayout.LayoutParams controls = new FrameLayout.LayoutParams(-2, -2, Gravity.LEFT | Gravity.TOP);
+        controls.leftMargin = dp(132);
+        controls.topMargin = dp(65);
+        header.addView(right, controls);
         return header;
     }
 
@@ -339,7 +365,7 @@ public class MainActivity extends Activity {
         ic.setTint(0xE6FFFFFF);
         p.setCompoundDrawables(null, null, ic, null);
         p.setCompoundDrawablePadding(dp(8));
-        p.setPadding(dp(14), 0, dp(14), 0);
+        p.setPadding(dp(10), 0, dp(10), 0);
         p.setFocusable(true);
         p.setId(View.generateViewId());
         GradientDrawable bg = new GradientDrawable();
@@ -361,9 +387,14 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------------- apps
 
     private void buildApps() {
+        View previous = lastFocusedId == View.NO_ID ? null : findViewById(lastFocusedId);
+        String focusedPackage = previous != null && previous.getTag() instanceof App
+                ? ((App) previous.getTag()).pkg : null;
         PackageManager pm = getPackageManager();
-        android.content.pm.ChangedPackages changed = pm.getChangedPackages(packageSeq);
-        if (changed != null) packageSeq = changed.getSequenceNumber();
+        if (android.os.Build.VERSION.SDK_INT >= 26) {
+            android.content.pm.ChangedPackages changed = pm.getChangedPackages(packageSeq);
+            if (changed != null) packageSeq = changed.getSequenceNumber();
+        }
         Map<String, App> byPkg = new HashMap<>();
         for (ResolveInfo ri : Dock.catalogue(this)) {
             ActivityInfo ai = ri.activityInfo;
@@ -381,12 +412,34 @@ public class MainActivity extends Activity {
         }
 
         List<App> dock = new ArrayList<>();
-        for (String p : dockApps) if (byPkg.containsKey(p)) dock.add(byPkg.remove(p));
+        for (String role : FeaturedApps.ROLES) {
+            String pkg = FeaturedApps.resolve(this, role);
+            App app = pkg == null ? null : byPkg.remove(pkg);
+            // A selected phone-only app may be deliberately absent from the ordinary TV grid.
+            if (app == null && pkg != null) {
+                Intent intent = pm.getLeanbackLaunchIntentForPackage(pkg);
+                if (intent == null) intent = pm.getLaunchIntentForPackage(pkg);
+                ResolveInfo ri = intent == null ? null : pm.resolveActivity(intent, 0);
+                if (ri != null) {
+                    app = new App(); app.pkg = pkg;
+                    app.component = new ComponentName(ri.activityInfo.packageName, ri.activityInfo.name);
+                    app.category = intent.hasCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
+                            ? Intent.CATEGORY_LEANBACK_LAUNCHER : Intent.CATEGORY_LAUNCHER;
+                    app.art = ri.loadIcon(pm); app.color = sampleColor(pkg, app.art);
+                }
+            }
+            if (app == null) {
+                app = new App();
+                app.pkg = "role:" + role;
+                app.color = role.equals("smarters") ? 0xFF146B98 : 0xFFB72126;
+                app.art = getDrawable(role.equals("smarters") ? R.drawable.ic_input : R.drawable.ic_home);
+            }
+            app.label = FeaturedApps.label(role);
+            dock.add(app);
+        }
         cardByPkg.clear();
         List<App> rest = new ArrayList<>(byPkg.values());
         Collections.sort(rest, (x, y) -> x.label.compareToIgnoreCase(y.label));
-        // Fewer than MIN_DOCK of the chosen apps installed: top the dock up from the rest.
-        while (dock.size() < MIN_DOCK && !rest.isEmpty()) dock.add(rest.remove(0));
 
         dockRow.removeAllViews();
         grid.removeAllViews();
@@ -395,7 +448,7 @@ public class MainActivity extends Activity {
 
         for (int i = 0; i < dock.size(); i++) {
             View tile = tile(dock.get(i), true);
-            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -2, 1f);
+            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(220), -2);
             p.setMargins(i == 0 ? 0 : dp(10), 0, i == dock.size() - 1 ? 0 : dp(10), 0);
             dockRow.addView(tile, p);
         }
@@ -423,7 +476,9 @@ public class MainActivity extends Activity {
         wireFocus();
 
         if (!dock.isEmpty()) { title.setText(dock.get(0).label); setGlow(dock.get(0).color); }
-        View last = lastFocusedId == View.NO_ID ? null : findViewById(lastFocusedId);
+        View last = focusedPackage == null
+                ? (lastFocusedId == View.NO_ID ? null : findViewById(lastFocusedId))
+                : cardByPkg.get(focusedPackage);
         if (last != null) last.requestFocus();
         else if (!dockCards.isEmpty()) dockCards.get(0).requestFocus();
     }
@@ -461,6 +516,13 @@ public class MainActivity extends Activity {
             img.setPadding(dp(22), dp(14), dp(22), dp(14));
         }
 
+        if (inDock) {
+            TextView caption = text(14, "medium", Color.WHITE);
+            caption.setText(app.label); caption.setGravity(Gravity.CENTER);
+            caption.setBackgroundColor(0xB3000000);
+            card.addView(caption, new FrameLayout.LayoutParams(-1, dp(28), Gravity.BOTTOM));
+        }
+
         // Focus ring and sheen, drawn above the art.
         GradientDrawable ring = new GradientDrawable();
         ring.setCornerRadius(dp(10));
@@ -481,10 +543,16 @@ public class MainActivity extends Activity {
         label.setAlpha(0f);
         if (!inDock) box.addView(label, llp(-1, -2, 0, dp(10), 0, 0));
 
-        card.setOnClickListener(v -> launch(new Intent(Intent.ACTION_MAIN)
-                .addCategory(app.category)
-                .setComponent(app.component)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)));
+        card.setContentDescription(app.label);
+        card.setOnClickListener(v -> {
+            if (app.component == null) {
+                android.widget.Toast.makeText(this, "اختر التطبيق المثبت من تخصيص", android.widget.Toast.LENGTH_LONG).show();
+                launch(new Intent(this, HomeSettingsActivity.class));
+            } else if (!launch(new Intent(Intent.ACTION_MAIN).addCategory(app.category)
+                    .setComponent(app.component).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED))) {
+                android.widget.Toast.makeText(this, "تعذر فتح التطبيق", android.widget.Toast.LENGTH_LONG).show();
+            }
+        });
         card.setOnFocusChangeListener((v, has) -> {
             float s = has ? (inDock ? 1.12f : 1.1f) : 1f;
             v.animate().scaleX(s).scaleY(s).translationZ(has ? dp(14) : 0)
@@ -508,7 +576,11 @@ public class MainActivity extends Activity {
         });
 
         // Long-press OK: add to / remove from / reorder the dock, right from the remote.
-        card.setOnLongClickListener(v -> { showAppMenu(v, app.pkg, inDock); return true; });
+        card.setOnLongClickListener(v -> {
+            if (inDock) launch(new Intent(this, HomeSettingsActivity.class));
+            else showAppMenu(v, app.pkg, false);
+            return true;
+        });
         cardByPkg.put(app.pkg, card);
 
         (inDock ? dockCards : gridCards).add(card);
@@ -551,11 +623,8 @@ public class MainActivity extends Activity {
         View row = (View) tileBox.getParent();
         int y = grid.getTop() + row.getTop();
         int screenH = getResources().getDisplayMetrics().heightPixels;
-        // First grid row: slide the dock band up to the top edge; later rows centre on screen.
-        View band = (View) dockRow.getParent();
-        int target = grid.indexOfChild(row) == 0
-                ? hero.getTop() + band.getTop() + dockRow.getTop() - dp(22)
-                : y - (int) (screenH * 0.42f);
+        // Centre the focused row even when the optional screensaver card adds content above it.
+        int target = y - (int) (screenH * 0.42f);
         int max = Math.max(0, content.getHeight() - scroll.getHeight());
         scroll.smoothScrollTo(0, Math.max(0, Math.min(target, max)));
     }
@@ -565,59 +634,21 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------------- dock editing
 
     private final Map<String, View> cardByPkg = new HashMap<>();
-    static final int MIN_DOCK = Dock.MIN, MAX_DOCK = Dock.MAX;
-
-    /** The user's dock if they edited it, else res/values/config.xml. */
     /** The launcher's settings file, shared with DockReceiver. */
     private android.content.SharedPreferences prefs() { return Dock.prefs(this); }
 
-    private String[] loadDock() {
-        String saved = prefs().getString("dock", null);
-        return saved != null ? (saved.isEmpty() ? new String[0] : saved.split(","))
-                             : getResources().getStringArray(R.array.dock_apps);
-    }
-
-    /** Only installed apps are kept, so the dock never holds a removed app's slot. */
-    private void saveDock(List<String> dock, String focusPkg) {
-        List<String> installed = new ArrayList<>();
-        for (String p : dock) if (isInstalled(p)) installed.add(p);
-        prefs().edit().putString("dock", android.text.TextUtils.join(",", installed)).apply();
-        dockApps = installed.toArray(new String[0]);
-        buildApps();
-        View c = cardByPkg.get(focusPkg);
-        if (c != null) c.post(c::requestFocus);
-    }
-
     private void showAppMenu(View anchor, String pkg, boolean inDock) {
-        List<String> dock = new ArrayList<>();
-        // The dock as shown, including apps added automatically to reach MIN_DOCK.
-        for (View c : dockCards) for (Map.Entry<String, View> e : cardByPkg.entrySet()) if (e.getValue() == c) dock.add(e.getKey());
-        int i = dock.indexOf(pkg);
         List<String> labels = new ArrayList<>();
         List<Runnable> actions = new ArrayList<>();
-        labels.add("ترتيب المفضلة…");
-        actions.add(() -> launch(new Intent(this, DockActivity.class)));
-        if (inDock) {
-            if (dock.size() > MIN_DOCK) {
-                labels.add("إزالة من المفضلة");
-                actions.add(() -> { dock.remove(pkg); saveDock(dock, dock.get(Math.max(0, i - 1))); });
-            } else {
-                labels.add("المفضلة لا تقل عن " + arabicDigits(String.valueOf(MIN_DOCK)));
-                actions.add(() -> { });
-            }
-        } else if (dock.size() < MAX_DOCK) {
-            labels.add("إضافة إلى المفضلة");
-            actions.add(() -> { dock.add(pkg); saveDock(dock, pkg); });
-        } else {
-            labels.add("المفضلة ممتلئة (" + MAX_DOCK + ")");
-            actions.add(() -> { });
+        for (String role : FeaturedApps.ROLES) {
+            labels.add("استخدامه في بطاقة " + FeaturedApps.label(role));
+            actions.add(() -> {
+                prefs().edit().putString("featured_" + role, pkg).apply();
+                buildApps();
+            });
         }
-        labels.add("إعادة المفضلة الافتراضية");
-        actions.add(() -> {
-            prefs().edit().remove("dock").apply();
-            dockApps = getResources().getStringArray(R.array.dock_apps);
-            buildApps();
-        });
+        labels.add("تخصيص الشاشة…");
+        actions.add(() -> launch(new Intent(this, HomeSettingsActivity.class)));
         showMenu(anchor, labels, actions);
     }
 
@@ -879,6 +910,14 @@ public class MainActivity extends Activity {
     /** Decode the next photo off the main thread, then crossfade it in over the current one. */
     private void nextWallpaper() {
         handler.removeCallbacks(rotateWallpaper);
+        showBundledWallpaper();
+    }
+
+    private long wallpaperInterval() {
+        return WALLPAPER_INTERVAL_MS; // Keep UrTV's original background schedule, independent of slideshow.
+    }
+
+    private void showBundledWallpaper() {
         if (wallpapers.length == 0) return;
         final String[] remote = remotePhotos();
         final int total = wallpapers.length + remote.length;
@@ -887,6 +926,7 @@ public class MainActivity extends Activity {
         prefs().edit().putInt("wallpaper", wallIndex).apply();
         wallChangedAt = SystemClock.elapsedRealtime();
         final int idx = wallIndex;
+        final int generation = ++wallpaperGeneration;
         final String fallback = "wallpapers/" + wallpapers[idx % wallpapers.length];
         new Thread(() -> {
             refreshPhotoIndex();
@@ -912,13 +952,17 @@ public class MainActivity extends Activity {
                 catch (java.io.IOException ignored) { }
             }
             Bitmap result = bm;
-            runOnUiThread(() -> showWallpaper(result));
+            runOnUiThread(() -> {
+                if (generation == wallpaperGeneration && resumed && !isDestroyed()) showWallpaper(result);
+                else if (result != null) result.recycle();
+            });
         }).start();
-        scheduleWallpaper(WALLPAPER_INTERVAL_MS);
+        scheduleWallpaper(wallpaperInterval());
     }
 
     private void showWallpaper(Bitmap bm) {
         if (bm == null || isDestroyed()) return;
+        hasWallpaper = true;
         // Swap roles: the old front becomes the back, the new photo fades in on top.
         ImageView old = wallFront;
         wallFront = wallBack;

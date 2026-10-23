@@ -61,6 +61,11 @@
             </intent-filter>
         </activity>
 
+        <activity android:name=".HomeSettingsActivity" android:exported="false"
+            android:screenOrientation="landscape"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
+
         <!-- «ترتيب المفضلة»: the favourites as a list; also opened from the screensaver's settings -->
         <activity
             android:name=".DockActivity"
