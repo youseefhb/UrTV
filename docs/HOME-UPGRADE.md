@@ -1,4 +1,4 @@
-# UrTV: matches, local wallpapers, and two featured apps
+# UrTV: matches, bundled photo slideshow, and two featured apps
 
 Branch: `feature/urtv-matches-wallpapers-two-apps`, based on local branch `work`.
 Repository: https://github.com/youseefhb/UrTV
@@ -9,7 +9,27 @@ The home hero has exactly two featured slots, IPTV Smarters and YouTube. Other i
 
 Smarters is discovered from installed launch activities using their labels and package names, rather than a fixed package. A TV launch activity is preferred; a normal launch activity is used when needed. Multiple matches or an absent match require a choice in **تخصيص**. No arbitrary alternative or store page is launched. YouTube is detected independently; SmartTube and YouTube Music are not substituted automatically. Long-press a featured tile to customize, or long-press an app in the grid to assign it to a slot. The old `DockActivity` settings entry opens the new customization screen. Saved legacy favorites are left in preferences, but do not populate the two fixed roles. `dock.sh set PKG1,PKG2` assigns the slots in Smarters/YouTube order; `reset` restores automatic discovery. Existing hide/show controls still affect the all-apps grid.
 
-**تخصيص → اختيار صورة أو عدة صور** opens Android's system document picker. Select up to 20 images; a single image remains fixed. Supported intervals: 1, 5, 10, 15, 30, or 60 minutes. Selecting new images replaces the previous selection. Images are imported into private app storage, downsampled to bound memory use, corrected for JPEG EXIF orientation, and saved independently of document-provider URI grants. Input limit: 20 MiB per image. Unreadable files are skipped; if none can be imported the old selection remains. Selection and interval survive process death/reboot, but uninstalling the app removes them. The reset button restores UrTV's bundled/hosted backgrounds. A TV without a compatible document picker needs a remote-compatible document-provider/file-manager app.
+## Bundled photo slideshow
+
+Photos are displayed in a 112×112 dp square at the upper-left (48 dp from the left, 36 dp from the top). The square ends at y=148 dp, before the fixture cards start at y=158 dp; it does not cover the match cards or the app dock. Header controls are offset to the right of the photo. The slideshow never takes D-pad focus. Images use `FIT_CENTER` and retain their aspect ratio, including letterboxing; JPEG EXIF orientation is respected. Decode runs off the UI thread with a maximum 512-pixel decoded edge. Photos advance every 10 seconds while home is visible; timers pause when another app is open. With no bundled images the square displays **لا توجد صور**. Invalid images are skipped, keeping the last good image if present.
+
+The original UrTV wallpaper renderer and its original ten-minute interval are preserved. Imported/local images and legacy wallpaper preferences are no longer used as backgrounds. The old local-photo picker and wallpaper duration controls were removed; no permission or file picker is needed for bundled photos. Prior private imported files are left untouched but are not displayed.
+
+Place the actual photo files directly inside:
+
+```text
+android/launcher/src/main/assets/slideshow/
+```
+
+Supported formats: JPG, JPEG, PNG, static WebP (case-insensitive). Convert HEIC to JPG/PNG before importing. Files are ordered alphabetically; use `001.jpg`, `002.jpg`, etc. to set their order. One photo remains visible. Avoid unnecessarily large originals to keep the APK small. Do not place photos in subfolders.
+
+On the Mac, from the repository root, import the supplied local folder with:
+
+```sh
+python3 src/import_slideshow.py "$HOME/Downloads/tv"
+```
+
+The script copies supported files directly inside that folder into the asset directory. It overwrites same-name photos but retains other existing slideshow images. To remove an old slideshow photo, remove that file from the asset directory before rebuilding. The Mac folder itself is not accessible from the cloud development environment, and no user photos were provided as attachments, so the current cloud build contains no personal photos. Import on the Mac and rebuild to produce the personalized APK. Assets are available immediately after installation and require no network.
 
 ## Match data and limits
 
@@ -58,6 +78,8 @@ Release outputs are under each module's `build/outputs/apk/release/`. No deploym
 
 ## Validation
 
+The slideshow update was built with two temporary portrait/landscape images and the APK ZIP entries were verified byte-for-byte against the source photos. Those test images were removed and the final APK rebuilt. The actual Mac images have not been available to this cloud environment. No on-device runtime or native layout test was performed.
+
 ```sh
 python3 tests/home_features_test.py
 gradle -p android :launcher:lintDebug
@@ -72,7 +94,7 @@ Before installing as the default home on a real API 24 TV, verify:
 1. Cold launch/resume and app install/removal do not raise `NoSuchMethodError`.
 2. D-pad navigates both featured slots, top controls, and all-apps grid; OK launches the selected activity; Back returns from grid/settings; long-press opens customization.
 3. Both actual clubs load online with logos and Riyadh dates/times; offline resume retains valid cached data; unavailable data shows its status.
-4. One and multiple local images work, including large and EXIF-rotated photos; interval/selection survive app restart and TV reboot; reset restores defaults.
+4. Bundled landscape/portrait/square photos retain proportions, advance every 10 seconds, and survive restart/reboot. No photo is used as a full-screen background. The upper-left photo, header controls, matches and app tiles do not overlap. Test with the actual Mac photos before installation.
 5. Old screensaver settings, optional home card, Wi-Fi, inputs, and other apps still work.
 
 No Android emulator or connected TV was used for runtime testing in this environment.

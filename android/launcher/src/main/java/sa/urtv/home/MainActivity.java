@@ -102,7 +102,7 @@ public class MainActivity extends Activity {
     private PopupWindow inputsPopup;
     private HomeCard homeCard;
     private MatchPanel matchPanel;
-    private long wallpaperRevision = -1;
+    private PhotoSlideshow photoSlideshow;
     private int wallpaperGeneration;
     private boolean resumed, hasWallpaper;
 
@@ -116,10 +116,6 @@ public class MainActivity extends Activity {
     private final BroadcastReceiver dockChanged = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) {
             buildApps();
-            long revision = prefs().getLong("wallpaperRevision", 0);
-            if (resumed && revision != wallpaperRevision) {
-                wallpaperRevision = revision; wallIndex = -1; nextWallpaper();
-            }
         }
     };
 
@@ -159,8 +155,7 @@ public class MainActivity extends Activity {
         updateWifi();
         homeCard.refresh();
         matchPanel.resume();
-        long revision = prefs().getLong("wallpaperRevision", 0);
-        if (revision != wallpaperRevision) { wallIndex = -1; wallpaperRevision = revision; }
+        photoSlideshow.resume();
         View last = lastFocusedId == View.NO_ID ? null : findViewById(lastFocusedId);
         if (last == null && !dockCards.isEmpty()) last = dockCards.get(0);
         if (last != null) last.requestFocus();
@@ -170,8 +165,7 @@ public class MainActivity extends Activity {
         if (firstShow) { firstShow = false; playEntrance(); }
         // New photo on return if the current one has been up for the full interval.
         if (!hasWallpaper || wallIndex < 0 || SystemClock.elapsedRealtime() - wallChangedAt >= wallpaperInterval()) nextWallpaper();
-        else if (WallpaperStore.files(this).length != 1)
-            scheduleWallpaper(wallpaperInterval() - (SystemClock.elapsedRealtime() - wallChangedAt));
+        else scheduleWallpaper(wallpaperInterval() - (SystemClock.elapsedRealtime() - wallChangedAt));
     }
 
     @Override
@@ -184,6 +178,7 @@ public class MainActivity extends Activity {
         if (inputsPopup != null) inputsPopup.dismiss();
         homeCard.pause();
         matchPanel.pause();
+        photoSlideshow.pause();
     }
 
     @Override
@@ -192,6 +187,7 @@ public class MainActivity extends Activity {
         unregisterReceiver(dockChanged);
         homeCard.destroy();
         matchPanel.destroy();
+        photoSlideshow.destroy();
         super.onDestroy();
     }
 
@@ -257,6 +253,8 @@ public class MainActivity extends Activity {
         content.addView(hero, new LinearLayout.LayoutParams(-1, Math.max(screenH, dp(540))));
 
         hero.addView(buildHeader(), lp(-1, -2, Gravity.TOP, dp(48), dp(36), dp(48), 0));
+        photoSlideshow = new PhotoSlideshow(this);
+        hero.addView(photoSlideshow.view(), lp(dp(112), dp(112), Gravity.TOP | Gravity.LEFT, dp(48), dp(36), 0, 0));
         matchPanel = new MatchPanel(this);
         hero.addView(matchPanel.view(), lp(-1, dp(110), Gravity.TOP, dp(48), dp(158), dp(48), 0));
 
@@ -347,10 +345,13 @@ public class MainActivity extends Activity {
         settings.setOnClickListener(v -> launch(new Intent(Settings.ACTION_SETTINGS)));
         for (TextView p : isInstalled(SAVER_PKG) ? new TextView[]{customize, inputs, wifiPill, settings, saver}
                                                   : new TextView[]{customize, inputs, wifiPill, settings}) {
-            right.addView(p, llp(-2, dp(30), dp(10), 0, 0, 0));
+            right.addView(p, llp(-2, dp(30), dp(6), 0, 0, 0));
             pills.add(p);
         }
-        header.addView(right, new FrameLayout.LayoutParams(-2, -2, Gravity.LEFT | Gravity.TOP));
+        FrameLayout.LayoutParams controls = new FrameLayout.LayoutParams(-2, -2, Gravity.LEFT | Gravity.TOP);
+        controls.leftMargin = dp(132);
+        controls.topMargin = dp(65);
+        header.addView(right, controls);
         return header;
     }
 
@@ -364,7 +365,7 @@ public class MainActivity extends Activity {
         ic.setTint(0xE6FFFFFF);
         p.setCompoundDrawables(null, null, ic, null);
         p.setCompoundDrawablePadding(dp(8));
-        p.setPadding(dp(14), 0, dp(14), 0);
+        p.setPadding(dp(10), 0, dp(10), 0);
         p.setFocusable(true);
         p.setId(View.generateViewId());
         GradientDrawable bg = new GradientDrawable();
@@ -909,29 +910,11 @@ public class MainActivity extends Activity {
     /** Decode the next photo off the main thread, then crossfade it in over the current one. */
     private void nextWallpaper() {
         handler.removeCallbacks(rotateWallpaper);
-        String[] local = WallpaperStore.files(this);
-        if (local.length > 0) {
-            if (wallIndex < 0) wallIndex = prefs().getInt("wallpaper", -1);
-            wallIndex = (wallIndex + 1) % local.length;
-            prefs().edit().putInt("wallpaper", wallIndex).apply();
-            wallChangedAt = SystemClock.elapsedRealtime();
-            final String file = local[wallIndex];
-            final int generation = ++wallpaperGeneration;
-            new Thread(() -> {
-                Bitmap bm = BitmapFactory.decodeFile(new java.io.File(getFilesDir(), "user-wallpapers/" + file).getPath());
-                runOnUiThread(() -> {
-                    if (generation != wallpaperGeneration || !resumed || isDestroyed()) { if (bm != null) bm.recycle(); return; }
-                    if (bm != null) showWallpaper(bm); else showBundledWallpaper();
-                });
-            }, "urtv-local-wallpaper").start();
-            if (local.length > 1) scheduleWallpaper(wallpaperInterval());
-            return;
-        }
         showBundledWallpaper();
     }
 
     private long wallpaperInterval() {
-        return prefs().getLong("wallpaperMinutes", 10) * 60_000L;
+        return WALLPAPER_INTERVAL_MS; // Keep UrTV's original background schedule, independent of slideshow.
     }
 
     private void showBundledWallpaper() {
