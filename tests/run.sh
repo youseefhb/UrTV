@@ -3,6 +3,7 @@
 #   pip install fonttools brotli pillow && npm install --no-save playwright@1.56.1 && npx playwright install chromium
 set -euo pipefail
 cd "$(dirname "$0")/.."
+python3 tests/home_features_test.py
 python3 tests/check.py
 python3 tests/upload_test.py
 python3 tests/share_test.py

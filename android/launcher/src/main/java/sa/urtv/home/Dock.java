@@ -17,8 +17,8 @@ import java.util.Set;
 
 /** The favourites row: one set of rules for the home screen, its «ترتيب المفضلة» screen and ADB (DockReceiver). */
 final class Dock {
-    static final int MIN = 5;    // the row never shows fewer apps than this
-    static final int MAX = 10;   // tiles share the row width, so 10 still fit at 1080p
+    static final int MIN = 2;    // two fixed featured roles
+    static final int MAX = 2;   // Smarters, then YouTube
     static final String CHANGED = "sa.urtv.home.DOCK_CHANGED";   // tells a running home screen to redraw
 
     private Dock() {}
@@ -112,8 +112,8 @@ final class Dock {
         Set<String> add = prefSet(c, hide ? "hidden" : "shown"), drop = prefSet(c, hide ? "shown" : "hidden");
         add.addAll(pkgs);
         drop.removeAll(pkgs);
-        prefs(c).edit().putString(hide ? "hidden" : "shown", String.join(",", add))
-                .putString(hide ? "shown" : "hidden", String.join(",", drop)).apply();
+        prefs(c).edit().putString(hide ? "hidden" : "shown", android.text.TextUtils.join(",", add))
+                .putString(hide ? "shown" : "hidden", android.text.TextUtils.join(",", drop)).apply();
         c.sendBroadcast(new Intent(CHANGED).setPackage(c.getPackageName()));
     }
 
@@ -130,24 +130,26 @@ final class Dock {
         return out;
     }
 
-    /** The row as the home screen shows it: saved apps still installed, topped up to MIN alphabetically. */
+    /** Installed featured apps, in role order. Missing roles remain placeholders in MainActivity. */
     static List<String> shown(Context c, Map<String, String> apps) {
         List<String> row = new ArrayList<>();
-        for (String p : saved(c)) if (apps.containsKey(p) && !row.contains(p) && row.size() < MAX) row.add(p);
-        List<String> rest = new ArrayList<>(apps.keySet());
-        rest.removeAll(row);
-        Collections.sort(rest, (x, y) -> apps.get(x).compareToIgnoreCase(apps.get(y)));
-        while (row.size() < MIN && !rest.isEmpty()) row.add(rest.remove(0));
+        for (String role : FeaturedApps.ROLES) {
+            String pkg = FeaturedApps.resolve(c, role);
+            if (pkg != null && !row.contains(pkg)) row.add(pkg);
+        }
         return row;
     }
 
     static void save(Context c, List<String> row) {
-        prefs(c).edit().putString("dock", String.join(",", row)).apply();
+        android.content.SharedPreferences.Editor edit = prefs(c).edit();
+        for (int i = 0; i < FeaturedApps.ROLES.length; i++)
+            edit.putString("featured_" + FeaturedApps.ROLES[i], i < row.size() ? row.get(i) : "");
+        edit.apply();
         c.sendBroadcast(new Intent(CHANGED).setPackage(c.getPackageName()));
     }
 
     static void reset(Context c) {
-        prefs(c).edit().remove("dock").apply();
+        prefs(c).edit().remove("featured_smarters").remove("featured_youtube").apply();
         c.sendBroadcast(new Intent(CHANGED).setPackage(c.getPackageName()));
     }
 }
